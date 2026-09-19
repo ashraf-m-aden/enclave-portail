@@ -20,6 +20,7 @@ const fs = require('fs');
 const path = require('path');
 
 const totp = require('./totp');
+const tickets = require('./reenrolement');
 
 const REGISTRE = process.env.ENCLAVE_ETAT
   || '/opt/enclave/orchestrateur/etat/acces.json';
@@ -100,7 +101,17 @@ function secondFacteurEnrole(identifiant) {
 function preparerEnrolement(identifiant) {
   const secrets = lireSecrets();
   const secret = totp.nouveauSecret();
-  secrets[identifiant] = { secret, enrole: false, prepare_le: new Date().toISOString() };
+  // CONSERVER le drapeau `revoque`. L'écraser ferait perdre la trace du
+  // réenrôlement en cours : /api/enrolement n'exigerait plus le ticket, et
+  // le mot de passe seul suffirait à poser un nouveau second facteur —
+  // exactement la fenêtre que le ticket doit fermer.
+  const revoque = secrets[identifiant] && secrets[identifiant].revoque === true;
+  secrets[identifiant] = {
+    secret,
+    enrole: false,
+    ...(revoque ? { revoque: true } : {}),
+    prepare_le: new Date().toISOString(),
+  };
   ecrireSecrets(secrets);
   return { secret, uri: totp.uriEnrolement(secret, identifiant) };
 }
@@ -117,8 +128,40 @@ function confirmerEnrolement(identifiant, code) {
   s.enrole = true;
   s.enrole_le = new Date().toISOString();
   s.dernier_compteur = compteur;
+  delete s.revoque;      // le réenrôlement est abouti
   ecrireSecrets(secrets);
   return true;
+}
+
+/**
+ * Révoque l'enrôlement d'un chercheur et émet un ticket de réenrôlement.
+ *
+ * Appelée UNIQUEMENT par la route interne, elle-même réservée à la console.
+ * Elle n'expose jamais le secret : elle l'efface et rend un ticket. La route
+ * exposée ne permet donc que d'invalider — jamais de lire ni de définir.
+ */
+function revoquerEnrolement(identifiant, { demandePar, approuvePar }) {
+  const secrets = lireSecrets();
+  if (!secrets[identifiant] || !secrets[identifiant].enrole) {
+    throw new Error("aucun second facteur enrôlé pour ce compte");
+  }
+
+  // Le secret est détruit, pas conservé « au cas où » : un secret révoqué qui
+  // traîne est un secret qui peut resservir.
+  secrets[identifiant] = {
+    enrole: false,
+    revoque: true,
+    revoque_le: new Date().toISOString(),
+  };
+  ecrireSecrets(secrets);
+
+  return tickets.emettre(identifiant, { demandePar, approuvePar });
+}
+
+/** Un réenrôlement est-il en attente pour ce compte ? */
+function reenrolementRequis(identifiant) {
+  const s = lireSecrets()[identifiant];
+  return !!s && s.revoque === true && s.enrole !== true;
 }
 
 /**
@@ -165,7 +208,7 @@ function compterEchec(identifiant) {
  * @returns {{etape: 'enrolement'|'connecte', ...}} `enrolement` quand le
  *   second facteur n'est pas encore posé : la première connexion l'impose.
  */
-async function connecter(identifiant, motDePasse, code) {
+async function connecter(identifiant, motDePasse, code, ticket) {
   verifierBlocage(identifiant);
 
   const acces = lireRegistre()[identifiant];
@@ -180,9 +223,20 @@ async function connecter(identifiant, motDePasse, code) {
     throw new Error('identifiant ou mot de passe incorrect');
   }
 
+  // Réenrôlement après révocation : le mot de passe NE SUFFIT PAS. Il faut
+  // aussi le ticket, qui expire. C'est ce qui borne la fenêtre pendant
+  // laquelle le compte serait réduit à un seul facteur.
+  if (reenrolementRequis(identifiant)) {
+    if (!tickets.valide(identifiant, ticket)) {
+      compterEchec(identifiant);
+      throw new Error('ticket de réenrôlement absent, expiré ou incorrect');
+    }
+    return { etape: 'enrolement', reenrolement: true, ...preparerEnrolement(identifiant) };
+  }
+
   // Première connexion : le second facteur doit être enrôlé avant tout accès.
   if (!secondFacteurEnrole(identifiant)) {
-    return { etape: 'enrolement', ...preparerEnrolement(identifiant) };
+    return { etape: 'enrolement', reenrolement: false, ...preparerEnrolement(identifiant) };
   }
 
   if (!verifierSecondFacteur(identifiant, code)) {
@@ -253,5 +307,6 @@ function jetonPour(identifiant) {
 
 module.exports = {
   connecter, garde, confirmerEnrolement, secondFacteurEnrole,
+  revoquerEnrolement, reenrolementRequis,
   lireRegistre, verifierMotDePasse, jetonPour, DUREE_SESSION_MS,
 };

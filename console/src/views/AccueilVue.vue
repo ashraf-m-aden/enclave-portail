@@ -15,6 +15,10 @@ const etape = ref<Etape>('connexion')
 const identifiant = ref('')
 const motDePasse = ref('')
 const code = ref('')
+// Ticket de reenrolement : exige seulement apres une reinitialisation.
+const ticket = ref('')
+const besoinTicket = ref(false)
+const reenrolement = ref(false)
 const erreur = ref<string | null>(null)
 const enCours = ref(false)
 
@@ -39,9 +43,11 @@ async function connecter() {
   erreur.value = null
   enCours.value = true
   try {
-    const r = await api.connexion(identifiant.value.trim(), motDePasse.value, code.value)
+    const r = await api.connexion(identifiant.value.trim(), motDePasse.value,
+                                  code.value, ticket.value)
     if (r.etape === 'enrolement') {
       secretTotp.value = r.secret
+      reenrolement.value = r.reenrolement
       qrDataUrl.value = await QRCode.toDataURL(r.uri, { width: 208, margin: 1 })
       etape.value = 'enrolement'
       code.value = ''
@@ -50,7 +56,10 @@ async function connecter() {
     }
     suivreOuverture(r.ticket)
   } catch (e) {
-    erreur.value = (e as Error).message
+    const m = (e as Error).message
+    erreur.value = m
+    // Le serveur signale qu'un ticket est attendu : on affiche le champ.
+    if (m.includes('ticket')) besoinTicket.value = true
     reinitialiser()
   }
 }
@@ -59,7 +68,8 @@ async function confirmerEnrolement() {
   erreur.value = null
   enCours.value = true
   try {
-    const r = await api.enrolement(identifiant.value.trim(), motDePasse.value, code.value)
+    const r = await api.enrolement(identifiant.value.trim(), motDePasse.value,
+                                   code.value, ticket.value)
     suivreOuverture(r.ticket)
   } catch (e) {
     erreur.value = (e as Error).message
@@ -145,6 +155,18 @@ function recommencer() {
             <p class="aide">Six chiffres, depuis votre application d'authentification.</p>
           </div>
 
+          <!-- N'apparaît qu'après une réinitialisation : le ticket est remis
+               par l'administrateur, hors bande. -->
+          <div v-if="besoinTicket" class="champ">
+            <label for="ticket">Ticket de réenrôlement</label>
+            <input id="ticket" v-model="ticket" type="text" class="mono"
+                   placeholder="XXXX-XXXX-XXXX" autocapitalize="characters" />
+            <p class="aide">
+              Votre second facteur a été réinitialisé. Ce ticket vous a été
+              transmis par un administrateur ; il expire au bout d'une heure.
+            </p>
+          </div>
+
           <button type="submit" class="btn btn--primaire" :disabled="enCours">
             {{ enCours ? 'Vérification…' : 'Ouvrir ma session' }}
           </button>
@@ -154,8 +176,12 @@ function recommencer() {
       <!-- ÉTAPE 2 — Enrôlement du second facteur -->
       <template v-else-if="etape === 'enrolement'">
         <div class="boite__titre">
-          <h1>Première connexion</h1>
-          <p>Associez une application d'authentification à votre compte.</p>
+          <h1>{{ reenrolement ? 'Nouvelle application' : 'Première connexion' }}</h1>
+          <p v-if="reenrolement">
+            Votre second facteur a été réinitialisé. Associez une nouvelle
+            application d'authentification.
+          </p>
+          <p v-else>Associez une application d'authentification à votre compte.</p>
         </div>
 
         <p v-if="erreur" class="message message--erreur" role="alert">{{ erreur }}</p>

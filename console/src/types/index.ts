@@ -7,7 +7,7 @@ export interface Chercheur {
 /** Réponse à une tentative de connexion. */
 export type Connexion =
   /** Première connexion : le second facteur doit être enrôlé. */
-  | { etape: 'enrolement'; secret: string; uri: string }
+  | { etape: 'enrolement'; secret: string; uri: string; reenrolement: boolean }
   /** Authentifié : l'ouverture de session a démarré, suivre le ticket. */
   | { etape: 'session'; ticket: string }
 

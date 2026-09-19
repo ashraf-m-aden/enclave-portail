@@ -42,6 +42,11 @@ services:
       # que le portail peut joindre.
       AGENT_SNIPPET_HOTE: ${AGENT_SNIPPET_HOTE:-enclave-agent@10.0.20.1}
       AGENT_SNIPPET_CLE: /home/enclave/.ssh/enclave-snippet-agent
+      # Secret partagé avec la console, pour la route interne de
+      # réinitialisation du second facteur. Cette route vit sous /interne/,
+      # que Nginx ne proxifie pas : elle n'est joignable que depuis le réseau
+      # Docker. Le secret s'ajoute à cette isolation, il ne la remplace pas.
+      INTERNE_SECRET: ${INTERNE_SECRET:?definir INTERNE_SECRET dans .env}
       NODE_TLS_REJECT_UNAUTHORIZED: ${NODE_TLS_REJECT_UNAUTHORIZED:-1}
 
     volumes:
@@ -87,6 +92,11 @@ services:
       AGENT_SAMBA_CLE: /home/enclave/.ssh/enclave-samba-agent
       AGENT_SNIPPET_HOTE: ${AGENT_SNIPPET_HOTE:-enclave-agent@10.0.20.1}
       AGENT_SNIPPET_CLE: /home/enclave/.ssh/enclave-snippet-agent
+      # Réinitialisation du second facteur : la console DEMANDE au portail,
+      # elle n'écrit jamais dans son état. Le secret TOTP reste du seul
+      # ressort du portail — la console ne le lit ni ne le définit jamais.
+      PORTAIL_INTERNE: ${PORTAIL_INTERNE:-http://portail:8091}
+      INTERNE_SECRET: ${INTERNE_SECRET:?definir INTERNE_SECRET dans .env}
       NODE_TLS_REJECT_UNAUTHORIZED: ${NODE_TLS_REJECT_UNAUTHORIZED:-1}
 
     volumes:

@@ -44,17 +44,17 @@ async function appeler<T>(chemin: string, options: RequestInit = {}): Promise<T>
 }
 
 export const api = {
-  connexion: (identifiant: string, motDePasse: string, code?: string) =>
+  connexion: (identifiant: string, motDePasse: string, code?: string, ticket?: string) =>
     appeler<Connexion>('/connexion', {
       method: 'POST',
-      body: JSON.stringify({ identifiant, motDePasse, code }),
+      body: JSON.stringify({ identifiant, motDePasse, code, ticket }),
     }),
 
   /** Confirme l'enrôlement du second facteur, puis ouvre la session. */
-  enrolement: (identifiant: string, motDePasse: string, code: string) =>
+  enrolement: (identifiant: string, motDePasse: string, code: string, ticket?: string) =>
     appeler<{ etape: 'session'; ticket: string }>('/enrolement', {
       method: 'POST',
-      body: JSON.stringify({ identifiant, motDePasse, code }),
+      body: JSON.stringify({ identifiant, motDePasse, code, ticket }),
     }),
 
   session: (ticket: string) => appeler<EtatSession>(`/session/${ticket}`),

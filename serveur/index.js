@@ -20,6 +20,7 @@ const ORCHESTRATEUR = process.env.ORCHESTRATEUR_CHEMIN
 const session = require(path.join(ORCHESTRATEUR, 'session'));
 
 const auth = require('./auth');
+const tickets = require('./reenrolement');
 const journal = require('./journal');
 
 const app = express();
@@ -107,23 +108,26 @@ function demarrerOuverture(identifiant, motDePasse, req) {
  *   - une erreur.
  */
 app.post('/api/connexion', route(async (req, res) => {
-  const { identifiant, motDePasse, code } = req.body || {};
+  const { identifiant, motDePasse, code, ticket } = req.body || {};
   if (!identifiant || !motDePasse) {
     return res.status(400).json({ erreur: 'identifiant et mot de passe requis' });
   }
 
   let r;
   try {
-    r = await auth.connecter(String(identifiant).trim(), String(motDePasse), code);
+    r = await auth.connecter(String(identifiant).trim(), String(motDePasse), code, ticket);
   } catch (e) {
     journal.echec(req, 'connexion', e.message, { identifiant });
     return res.status(401).json({ erreur: e.message });
   }
 
   if (r.etape === 'enrolement') {
-    journal.ok(req, 'enrolement-demande', { identifiant });
+    journal.ok(req, r.reenrolement ? 'reenrolement-demande' : 'enrolement-demande', { identifiant });
     // Le secret n'est montré qu'à cet instant, pour être enrôlé.
-    return res.json({ etape: 'enrolement', secret: r.secret, uri: r.uri });
+    return res.json({
+      etape: 'enrolement', secret: r.secret, uri: r.uri,
+      reenrolement: r.reenrolement === true,
+    });
   }
 
   poserCookie(res, r.jeton);
@@ -136,7 +140,7 @@ app.post('/api/connexion', route(async (req, res) => {
 
 /** Confirme l'enrôlement du second facteur, puis ouvre la session. */
 app.post('/api/enrolement', route(async (req, res) => {
-  const { identifiant, motDePasse, code } = req.body || {};
+  const { identifiant, motDePasse, code, ticket } = req.body || {};
   if (!identifiant || !motDePasse || !code) {
     return res.status(400).json({ erreur: 'identifiant, mot de passe et code requis' });
   }
@@ -151,6 +155,14 @@ app.post('/api/enrolement', route(async (req, res) => {
     return res.status(401).json({ erreur: 'identifiant ou mot de passe incorrect' });
   }
 
+  // Réenrôlement : le ticket est revérifié ICI aussi. Sans cela, un appel
+  // direct à cette route sauterait le contrôle fait à la connexion.
+  const reenrolement = auth.reenrolementRequis(identifiant);
+  if (reenrolement && !tickets.valide(identifiant, ticket)) {
+    journal.echec(req, 'reenrolement', 'ticket absent, expiré ou incorrect', { identifiant });
+    return res.status(401).json({ erreur: 'ticket de réenrôlement absent, expiré ou incorrect' });
+  }
+
   try {
     auth.confirmerEnrolement(identifiant, String(code));
   } catch (e) {
@@ -161,8 +173,11 @@ app.post('/api/enrolement', route(async (req, res) => {
   // Le mot de passe et le code viennent d'etre verifies ci-dessus. Repasser
   // par connecter() echouerait : l'anti-rejeu a consomme le compteur de ce
   // code, et c'est exactement ce qu'on attend de lui.
+  // Le ticket a servi : il ne resservira pas.
+  if (reenrolement) tickets.consommer(identifiant);
+
   poserCookie(res, auth.jetonPour(identifiant));
-  journal.ok(req, 'enrolement', { identifiant });
+  journal.ok(req, reenrolement ? 'reenrolement' : 'enrolement', { identifiant });
   res.json({
     etape: 'session',
     ticket: demarrerOuverture(identifiant, String(motDePasse), req),
@@ -197,6 +212,68 @@ app.post('/api/deconnexion', auth.garde, route(async (req, res) => {
   journal.ok(req, 'deconnexion', { identifiant: req.chercheur.identifiant });
   res.clearCookie('enclave_portail', { path: '/' });
   res.json({ ok: true });
+}));
+
+// ---------------------------------------------------------------------------
+// Route INTERNE — réservée à la console d'administration
+//
+// Elle vit sous /interne/, que Nginx ne proxifie PAS : seul un service du
+// réseau Docker peut l'atteindre. Un secret partagé s'ajoute à cette
+// isolation réseau, pour que l'un ne repose pas sur l'autre.
+//
+// Elle ne permet QUE d'invalider un enrôlement. Jamais de lire un secret,
+// jamais d'en définir un : le secret TOTP reste du seul ressort du portail.
+// ---------------------------------------------------------------------------
+
+const SECRET_INTERNE = process.env.INTERNE_SECRET || '';
+
+function gardeInterne(req, res, suite) {
+  if (!SECRET_INTERNE) {
+    return res.status(503).json({ erreur: 'route interne non configurée' });
+  }
+  const propose = Buffer.from(req.get('X-Interne') || '');
+  const attendu = Buffer.from(SECRET_INTERNE);
+  if (propose.length !== attendu.length || !crypto.timingSafeEqual(propose, attendu)) {
+    return res.status(403).json({ erreur: 'secret interne incorrect' });
+  }
+  suite();
+}
+
+/**
+ * Révoque le second facteur et rend un ticket de réenrôlement.
+ *
+ * La console reçoit le ticket — qu'elle transmet au chercheur hors bande —
+ * mais jamais le secret TOTP, ni avant ni après.
+ */
+app.post('/interne/reenrolement', gardeInterne, route(async (req, res) => {
+  const { identifiant, demandePar, approuvePar } = req.body || {};
+  if (!identifiant || !demandePar) {
+    return res.status(400).json({ erreur: 'identifiant et demandeur requis' });
+  }
+
+  let ticket;
+  try {
+    ticket = auth.revoquerEnrolement(String(identifiant), { demandePar, approuvePar });
+  } catch (e) {
+    journal.echec(req, 'revocation-second-facteur', e.message, { identifiant });
+    return res.status(409).json({ erreur: e.message });
+  }
+
+  journal.ok(req, 'revocation-second-facteur', {
+    identifiant, demande_par: demandePar, approuve_par: approuvePar || null,
+    expire_le: ticket.expire_le,
+  });
+
+  res.json({
+    ticket: ticket.identifiant,
+    expire_le: ticket.expire_le,
+    validite_minutes: Math.round(tickets.VALIDITE_MS / 60000),
+  });
+}));
+
+/** État du ticket d'un chercheur. Ne révèle jamais sa valeur. */
+app.get('/interne/reenrolement/:identifiant', gardeInterne, route(async (req, res) => {
+  res.json({ ticket: tickets.etat(req.params.identifiant) });
 }));
 
 // ---------------------------------------------------------------------------

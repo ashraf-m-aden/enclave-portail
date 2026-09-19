@@ -1,0 +1,133 @@
+# =============================================================================
+#  ENCLAVE SÉCURISÉE — INSTAD
+#  Portail chercheur et console d'administration
+#
+#  LA SÉPARATION EST LE POINT CENTRAL DE CE FICHIER.
+#
+#  Le portail est la seule surface exposée aux utilisateurs. Il ne reçoit
+#  jamais la clé de l'agent Samba : une compromission du portail ne permet ni
+#  de créer, ni de modifier, ni de révoquer un accès. Comparez les volumes des
+#  deux services — la différence se lit ici, pas seulement dans le code.
+#
+#  Aucune image ne contient de secret. Jeton Proxmox, clés des agents et
+#  secrets de signature sont montés ou injectés à l'exécution.
+# =============================================================================
+
+services:
+
+  # ---------------------------------------------------------------------------
+  #  PORTAIL CHERCHEUR — exposé en 443
+  # ---------------------------------------------------------------------------
+  portail:
+    image: nejishow/enclave-portail:latest
+    container_name: enclave-portail
+    restart: unless-stopped
+
+    environment:
+      PORTAIL_PORT: 8091
+      PORTAIL_HOTE: 0.0.0.0
+      # Signature des cookies. DOIT être fixe : sinon les sessions tombent à
+      # chaque redémarrage.
+      PORTAIL_SECRET: ${PORTAIL_SECRET:?definir PORTAIL_SECRET dans .env}
+      PROXMOX_TOKEN: ${PROXMOX_TOKEN:?definir PROXMOX_TOKEN}
+      PROXMOX_URL: ${PROXMOX_URL:-https://10.0.20.1:8006/api2/json}
+      VMID_MODELE: ${VMID_MODELE:-9002}
+      # Clé partagée avec Guacamole pour signer les jetons de session.
+      JSON_SECRET_KEY: ${JSON_SECRET_KEY:?definir JSON_SECRET_KEY}
+      # Guacamole n'publie son port que sur la boucle locale de l'hôte : il
+      # est donc invisible depuis un conteneur. On le joint par son nom, sur
+      # son propre réseau Docker (voir `networks` plus bas).
+      GUAC_URL: ${GUAC_URL:-http://guacamole:8080/guacamole}
+      # L'agent snippet écrit le cloud-init d'une session. C'est le SEUL agent
+      # que le portail peut joindre.
+      AGENT_SNIPPET_HOTE: ${AGENT_SNIPPET_HOTE:-enclave-agent@10.0.20.1}
+      AGENT_SNIPPET_CLE: /home/enclave/.ssh/enclave-snippet-agent
+      # Secret partagé avec la console, pour la route interne de
+      # réinitialisation du second facteur. Cette route vit sous /interne/,
+      # que Nginx ne proxifie pas : elle n'est joignable que depuis le réseau
+      # Docker. Le secret s'ajoute à cette isolation, il ne la remplace pas.
+      INTERNE_SECRET: ${INTERNE_SECRET:?definir INTERNE_SECRET dans .env}
+      # Surveillance des sessions : sans elle, un clone survit à la
+      # déconnexion et la reconnexion en crée un second.
+      INACTIVITE_MAX: ${INACTIVITE_MAX:-1800000}      # 30 min
+      DELAI_ACCUEIL: ${DELAI_ACCUEIL:-900000}         # 15 min pour se connecter
+      DUREE_MAX_SESSION: ${DUREE_MAX_SESSION:-43200000}  # 12 h
+      SURVEILLANCE_INTERVALLE: ${SURVEILLANCE_INTERVALLE:-60000}
+      NODE_TLS_REJECT_UNAUTHORIZED: ${NODE_TLS_REJECT_UNAUTHORIZED:-1}
+
+    volumes:
+      - /opt/enclave/portail/etat:/app/etat
+      # Le registre des accès en LECTURE SEULE : le portail le lit pour
+      # authentifier et pour sa porte « actif ». Il ne l'écrit jamais.
+      - /opt/enclave/orchestrateur/etat:/opt/enclave/orchestrateur/etat:ro
+      - /opt/enclave/orchestrateur/services:/opt/enclave/orchestrateur/services:ro
+      # UNIQUEMENT la clé de l'agent snippet. Pas celle de l'agent Samba.
+      - /opt/enclave/portail/cles:/home/enclave/.ssh:ro
+
+    ports:
+      - "127.0.0.1:8091:8091"
+
+    networks:
+      - defaut
+      # Réseau de la pile Guacamole : le portail doit l'atteindre pour
+      # échanger son jeton de session. La console, elle, n'en a pas besoin.
+      - guacamole
+
+    security_opt: [ "no-new-privileges:true" ]
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "5" }
+
+  # ---------------------------------------------------------------------------
+  #  CONSOLE D'ADMINISTRATION — exposée en 8443, restreinte par IP
+  # ---------------------------------------------------------------------------
+  admin:
+    image: nejishow/enclave-admin:latest
+    container_name: enclave-admin
+    restart: unless-stopped
+
+    environment:
+      ADMIN_PORT: 8090
+      ADMIN_HOTE: 0.0.0.0
+      ADMIN_SECRET: ${ADMIN_SECRET:?definir ADMIN_SECRET dans .env}
+      PROXMOX_TOKEN: ${PROXMOX_TOKEN:?definir PROXMOX_TOKEN}
+      PROXMOX_URL: ${PROXMOX_URL:-https://10.0.20.1:8006/api2/json}
+      VMID_MODELE: ${VMID_MODELE:-9002}
+      # La console, elle, pilote les DEUX agents.
+      AGENT_SAMBA_HOTE: ${AGENT_SAMBA_HOTE:-enclave-samba@10.0.30.3}
+      AGENT_SAMBA_CLE: /home/enclave/.ssh/enclave-samba-agent
+      AGENT_SNIPPET_HOTE: ${AGENT_SNIPPET_HOTE:-enclave-agent@10.0.20.1}
+      AGENT_SNIPPET_CLE: /home/enclave/.ssh/enclave-snippet-agent
+      # Réinitialisation du second facteur : la console DEMANDE au portail,
+      # elle n'écrit jamais dans son état. Le secret TOTP reste du seul
+      # ressort du portail — la console ne le lit ni ne le définit jamais.
+      PORTAIL_INTERNE: ${PORTAIL_INTERNE:-http://portail:8091}
+      INTERNE_SECRET: ${INTERNE_SECRET:?definir INTERNE_SECRET dans .env}
+      NODE_TLS_REJECT_UNAUTHORIZED: ${NODE_TLS_REJECT_UNAUTHORIZED:-1}
+
+    volumes:
+      - /opt/enclave/admin/etat:/app/etat
+      # En ÉCRITURE : le provisionnement inscrit l'accès dans le registre.
+      - /opt/enclave/orchestrateur/etat:/opt/enclave/orchestrateur/etat
+      - /opt/enclave/orchestrateur/services:/opt/enclave/orchestrateur/services:ro
+      # Les deux clés.
+      - /opt/enclave/admin/cles:/home/enclave/.ssh:ro
+
+    ports:
+      - "127.0.0.1:8090:8090"
+
+    networks:
+      - defaut
+
+    security_opt: [ "no-new-privileges:true" ]
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "5" }
+
+networks:
+  defaut:
+    driver: bridge
+  # Créé par la pile Guacamole : on s'y raccorde, on ne le gère pas ici.
+  guacamole:
+    external: true
+    name: guacamole_guac

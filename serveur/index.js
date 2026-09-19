@@ -18,9 +18,11 @@ const path = require('path');
 const ORCHESTRATEUR = process.env.ORCHESTRATEUR_CHEMIN
   || '/opt/enclave/orchestrateur/services';
 const session = require(path.join(ORCHESTRATEUR, 'session'));
+const pve = require(path.join(ORCHESTRATEUR, 'proxmox'));
 
 const auth = require('./auth');
 const tickets = require('./reenrolement');
+const surveillance = require('./surveillance');
 const journal = require('./journal');
 
 const app = express();
@@ -278,6 +280,20 @@ app.get('/interne/reenrolement/:identifiant', gardeInterne, route(async (req, re
 
 // ---------------------------------------------------------------------------
 
+/** État de la surveillance, pour le tableau de bord de la console. */
+app.get('/interne/surveillance', gardeInterne, route(async (req, res) => {
+  res.json({
+    sessions: surveillance.etatDesSessions(),
+    reglages: {
+      inactivite_min: Math.round(surveillance.INACTIVITE_MS / 60000),
+      accueil_min: Math.round(surveillance.ACCUEIL_MS / 60000),
+      duree_max_h: Math.round(surveillance.DUREE_MAX_MS / 3600000),
+      seuil_octets_min: surveillance.SEUIL_OCTETS_PAR_MIN,
+      demarrage_min: Math.round(surveillance.DELAI_DEMARRAGE_MS / 60000),
+    },
+  });
+}));
+
 app.use((req, res) => res.status(404).json({ erreur: 'route inconnue' }));
 
 const PORT = parseInt(process.env.PORTAIL_PORT || '8091', 10);
@@ -285,6 +301,9 @@ const HOTE = process.env.PORTAIL_HOTE || '127.0.0.1';
 
 if (require.main === module) {
   app.listen(PORT, HOTE, () => console.log(`[portail] portail chercheur sur http://${HOTE}:${PORT}`));
+  // Détruit les clones dont personne ne se sert : déconnexion, session laissée
+  // ouverte, ou machine créée puis jamais utilisée.
+  surveillance.demarrer(pve, session.fermerSession, journal);
 }
 
 module.exports = app;

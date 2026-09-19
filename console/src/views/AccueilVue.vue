@@ -9,7 +9,7 @@ import { api } from '@/api'
  *   enrolement → première connexion : poser l'application d'authentification
  *   ouverture  → la session se prépare (environ deux minutes)
  */
-type Etape = 'connexion' | 'enrolement' | 'ouverture'
+type Etape = 'connexion' | 'enrolement' | 'ouverture' | 'en-session'
 
 const etape = ref<Etape>('connexion')
 const identifiant = ref('')
@@ -31,7 +31,68 @@ const secondes = ref(0)
 const etatOuverture = ref<'en-cours' | 'prete' | 'echec'>('en-cours')
 let sondage: number | undefined
 
-onUnmounted(() => window.clearInterval(sondage))
+// Onglet de travail. Le portail NE LE SUIT PAS : il reste ouvert derriere,
+// pour pouvoir signaler le depart du chercheur. S'il naviguait vers
+// Guacamole, sa page dispararaitrait et plus rien ne pourrait le faire.
+let ongletSession: Window | null = null
+let veille: number | undefined
+const sessionFermee = ref(false)
+// Vrai quand le serveur a retrouve une session au lieu d'en creer une : le
+// chercheur doit comprendre qu'il reprend son travail, pas qu'il repart de zero.
+const reprise = ref(false)
+
+/**
+ * Previent le serveur que le chercheur a quitte sa session.
+ *
+ * sendBeacon et non fetch : la requete est remise au navigateur, qui la
+ * poste meme si l'onglet dispararait dans la foulee. Un fetch serait annule.
+ * Le type text/plain evite un preflight CORS, que sendBeacon ne sait pas
+ * negocier.
+ *
+ * Cote serveur, ce signal DECLENCHE UN COMPTE A REBOURS, il ne detruit rien :
+ * une coupure reseau de vingt secondes ressemble a un depart definitif.
+ */
+function signalerDepart() {
+  if (sessionFermee.value) return
+  navigator.sendBeacon?.('/api/session/quittee', new Blob([''], { type: 'text/plain' }))
+}
+
+window.addEventListener('pagehide', signalerDepart)
+
+onUnmounted(() => {
+  window.clearInterval(sondage)
+  window.clearInterval(veille)
+  window.removeEventListener('pagehide', signalerDepart)
+})
+
+/** Ouvre la session dans un onglet et surveille sa fermeture. */
+function ouvrirOngletSession(url: string) {
+  ongletSession = window.open(url, 'enclave-session')
+  etape.value = 'en-session'
+
+  // Le navigateur a bloque la fenetre : on laisse un lien a cliquer plutot
+  // que d'abandonner le chercheur devant un ecran qui ne fait rien.
+  if (!ongletSession) return
+
+  veille = window.setInterval(() => {
+    if (ongletSession && ongletSession.closed) {
+      window.clearInterval(veille)
+      signalerDepart()
+      sessionFermee.value = true
+    }
+  }, 2000)
+}
+
+/** Bouton « terminer ma session » : intention explicite, aucun delai. */
+async function terminerSession() {
+  sessionFermee.value = true
+  window.clearInterval(veille)
+  try { ongletSession?.close() } catch { /* deja ferme */ }
+  try { await api.deconnexion() } catch { /* le filet de surveillance reste */ }
+  etape.value = 'connexion'
+  identifiant.value = ''
+  reinitialiser()
+}
 
 function reinitialiser() {
   motDePasse.value = ''
@@ -98,7 +159,8 @@ function suivreOuverture(ticket: string) {
 
       if (s.etat === 'prete' && s.url) {
         window.clearInterval(sondage)
-        window.location.href = s.url
+        reprise.value = s.reprise === true
+        ouvrirOngletSession(s.url)
       } else if (s.etat === 'echec') {
         window.clearInterval(sondage)
         erreur.value = s.erreur || "l'ouverture de session a échoué"
@@ -237,6 +299,42 @@ function recommencer() {
             Réessayer
           </button>
         </template>
+      </template>
+
+      <!-- ÉTAPE 4 — La session tourne dans un autre onglet -->
+      <template v-if="etape === 'en-session'">
+        <div class="boite__titre">
+          <h1 v-if="!sessionFermee && reprise">Nous avons retrouvé votre session</h1>
+          <h1 v-else-if="!sessionFermee">Votre session est ouverte</h1>
+          <h1 v-else>Session terminée</h1>
+          <p v-if="!sessionFermee && reprise">
+            Votre machine vous attendait, telle que vous l'aviez laissée. Elle
+            s'est rouverte dans un autre onglet. Gardez cette page ouverte :
+            c'est elle qui la libère quand vous partez.
+          </p>
+          <p v-else-if="!sessionFermee">
+            Elle s'est ouverte dans un autre onglet. Gardez cette page ouverte :
+            c'est elle qui libère votre machine quand vous partez.
+          </p>
+          <p v-else>
+            Votre machine est en cours de libération. Vos fichiers de
+            <strong>Travaux</strong> et vos dépôts sont conservés.
+          </p>
+        </div>
+
+        <template v-if="!sessionFermee">
+          <button type="button" class="btn btn--primaire" @click="terminerSession">
+            Terminer ma session
+          </button>
+          <p class="aide aide--centree">
+            Si vous fermez cette page par mégarde, votre machine vous attend
+            dix minutes : reconnectez-vous et vous la retrouverez telle quelle.
+          </p>
+        </template>
+
+        <button v-else type="button" class="btn btn--neutre" @click="recommencer">
+          Revenir à l'accueil
+        </button>
       </template>
 
       <p class="boite__note">

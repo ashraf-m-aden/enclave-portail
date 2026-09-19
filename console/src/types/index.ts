@@ -17,4 +17,8 @@ export interface EtatSession {
   url: string | null
   erreur: string | null
   secondes: number
+  /** VMID de SA session — dérivé de son identifiant côté serveur. */
+  vmid: number | null
+  /** Vrai quand le serveur a retrouvé une session au lieu d'en créer une. */
+  reprise: boolean
 }

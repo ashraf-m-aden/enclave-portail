@@ -49,6 +49,21 @@ const DELAI_DEMARRAGE_MS = parseInt(process.env.DELAI_DEMARRAGE || String(4 * 60
 /** Garde-fou absolu : une session ne dure pas indéfiniment. */
 const DUREE_MAX_MS = parseInt(process.env.DUREE_MAX_SESSION || String(12 * 60 * 60 * 1000), 10);
 
+// Delai de grace apres une deconnexion SIGNALEE par le navigateur du
+// chercheur — a distinguer de l'inactivite mesuree, qui est une deduction.
+//
+// POURQUOI UN DELAI, ET PAS UNE DESTRUCTION IMMEDIATE. Une coupure reseau de
+// vingt secondes produit exactement le meme signal qu'une fermeture
+// volontaire. Detruire aussitot effacerait les tampons non enregistres de
+// RStudio sur un simple hoquet. Les fichiers de « travaux » sont a l'abri —
+// ils vivent sur le serveur de fichiers — mais pas un script en cours
+// d'ecriture.
+//
+// Pendant ce delai, une reconnexion RETROUVE la meme VM : voir la reprise de
+// session dans session.js.
+const GRACE_DECONNEXION_MS = parseInt(
+  process.env.GRACE_DECONNEXION || String(10 * 60 * 1000), 10);
+
 function lire() {
   try {
     return JSON.parse(fs.readFileSync(ETAT, 'utf8'));
@@ -64,6 +79,40 @@ function ecrire(etat) {
   fs.renameSync(tmp, ETAT);
 }
 
+/**
+ * Le navigateur du chercheur signale une deconnexion.
+ *
+ * On MARQUE, on ne detruit pas : la destruction reste au seul passage de
+ * surveillance. Un unique chemin de destruction se raisonne, se journalise et
+ * se teste ; deux chemins concurrents finissent toujours par se marcher dessus.
+ *
+ * @param {number} vmid
+ * @param {boolean} immediat  true pour une deconnexion VOULUE (bouton), qui
+ *   n'a pas besoin de delai de grace : l'intention est explicite.
+ */
+function signalerDeconnexion(vmid, immediat = false) {
+  const suivi = lire();
+  const s = suivi[String(vmid)];
+  if (!s) return false;
+  s.deconnecte_le = immediat ? 0 : Date.now();
+  s.deconnexion_voulue = !!immediat;
+  ecrire(suivi);
+  return true;
+}
+
+/** Le chercheur est revenu : la session reprend, le compte a rebours tombe. */
+function signalerReconnexion(vmid) {
+  const suivi = lire();
+  const s = suivi[String(vmid)];
+  if (!s) return false;
+  delete s.deconnecte_le;
+  delete s.deconnexion_voulue;
+  s.derniereActivite = Date.now();
+  s.dejaActive = true;
+  ecrire(suivi);
+  return true;
+}
+
 /** Ce que la surveillance sait de chaque clone, pour la console. */
 function etatDesSessions() {
   const suivi = lire();
@@ -77,6 +126,9 @@ function etatDesSessions() {
       ? Math.round((maintenant - s.derniereActivite) / 1000)
       : null,
     debit_octets_min: s.debit ?? null,
+    deconnecte_depuis_s: s.deconnecte_le
+      ? Math.round((maintenant - s.deconnecte_le) / 1000)
+      : null,
   }));
 }
 
@@ -147,7 +199,23 @@ async function passage(pve, fermer, journal) {
       continue;
     }
 
-    // --- Règle 2 : inactivité ------------------------------------------------
+    // --- Règle 2 : déconnexion signalée --------------------------------------
+    // Un SIGNAL, pas une déduction : le navigateur a dit que le chercheur
+    // était parti. On peut donc être bien plus rapide que la règle 3, qui doit
+    // rester tolérante pour ne pas fermer la session de quelqu'un qui réfléchit
+    // devant son écran sans toucher au clavier.
+    if (s.deconnecte_le !== undefined
+        && maintenant - s.deconnecte_le > (s.deconnexion_voulue ? 0 : GRACE_DECONNEXION_MS)) {
+      fermees.push({
+        vmid: c.vmid,
+        motif: s.deconnexion_voulue
+          ? 'déconnexion demandée par le chercheur'
+          : `déconnecté depuis ${Math.round((maintenant - s.deconnecte_le) / 60000)} min`,
+      });
+      continue;
+    }
+
+    // --- Règle 3 : inactivité ------------------------------------------------
     // Couvre la déconnexion — le flux tombe à zéro — comme la session laissée
     // ouverte sans personne devant.
     if (s.dejaActive && maintenant - s.derniereActivite > INACTIVITE_MS) {
@@ -158,7 +226,7 @@ async function passage(pve, fermer, journal) {
       continue;
     }
 
-    // --- Règle 3 : durée maximale -------------------------------------------
+    // --- Règle 4 : durée maximale -------------------------------------------
     if (maintenant - s.creation > DUREE_MAX_MS) {
       fermees.push({ vmid: c.vmid, motif: 'durée maximale atteinte' });
     }
@@ -193,11 +261,14 @@ function demarrer(pve, fermer, journal) {
   console.log('[surveillance] active — inactivité '
     + `${Math.round(INACTIVITE_MS / 60000)} min, accueil ${Math.round(ACCUEIL_MS / 60000)} min `
     + `(après ${Math.round(DELAI_DEMARRAGE_MS / 60000)} min de démarrage), `
-    + `durée max ${Math.round(DUREE_MAX_MS / 3600000)} h`);
+    + `durée max ${Math.round(DUREE_MAX_MS / 3600000)} h, `
+    + `grâce après déconnexion ${Math.round(GRACE_DECONNEXION_MS / 60000)} min`);
   return minuteur;
 }
 
 module.exports = {
   demarrer, passage, etatDesSessions,
+  signalerDeconnexion, signalerReconnexion,
   SEUIL_OCTETS_PAR_MIN, INACTIVITE_MS, ACCUEIL_MS, DUREE_MAX_MS, DELAI_DEMARRAGE_MS,
+  GRACE_DECONNEXION_MS,
 };

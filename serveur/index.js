@@ -106,7 +106,12 @@ function demarrerOuverture(identifiant, motDePasse, req) {
       // Guacamole est servi sous /guacamole/ ; le portail occupe la racine.
       o.url = `/guacamole/#/?token=${r.authToken}`;
       o.vmid = r.vmid;
-      journal.ok(req, 'session-ouverte', { identifiant, vmid: r.vmid });
+      o.reprise = r.reprise === true;
+      // Le chercheur est revenu : le compte a rebours de grace tombe, sinon
+      // la surveillance detruirait la session qu'on vient de lui rendre.
+      if (r.reprise) surveillance.signalerReconnexion(r.vmid);
+      journal.ok(req, r.reprise ? 'session-reprise' : 'session-ouverte',
+        { identifiant, vmid: r.vmid });
     })
     .catch((e) => {
       o.etat = 'echec';
@@ -235,6 +240,12 @@ app.get('/api/session/:ticket', auth.garde, route(async (req, res) => {
     url: o.url || null,
     erreur: o.erreur || null,
     secondes: Math.round((Date.now() - o.debut) / 1000),
+    // Le vmid est celui de SA session — derive de son identifiant, jamais
+    // fourni par lui. Aucune route ne prend un vmid en entree cote chercheur.
+    vmid: o.vmid ?? null,
+    // Permet a l'interface de dire « nous avons retrouve votre session »
+    // plutot que de laisser croire a un redemarrage.
+    reprise: o.reprise === true,
   });
 }));
 
@@ -242,10 +253,59 @@ app.get('/api/moi', auth.garde, route(async (req, res) => {
   res.json({ chercheur: { identifiant: req.chercheur.identifiant } });
 }));
 
+/**
+ * Deconnexion VOULUE : le chercheur a clique sur « terminer ma session ».
+ *
+ * L'intention est explicite, donc pas de delai de grace — contrairement a la
+ * fermeture d'onglet, qui peut n'etre qu'une coupure reseau.
+ *
+ * On MARQUE la session ; c'est le passage de surveillance qui detruit. Un seul
+ * chemin de destruction, journalise et testable.
+ */
 app.post('/api/deconnexion', auth.garde, route(async (req, res) => {
-  journal.ok(req, 'deconnexion', { identifiant: req.chercheur.identifiant });
+  const identifiant = req.chercheur.identifiant;
+  let vmid = null;
+  try {
+    const s = await session.sessionExistante(identifiant);
+    if (s) {
+      vmid = s.vmid;
+      surveillance.signalerDeconnexion(vmid, true);
+    }
+  } catch (e) {
+    // Proxmox injoignable : la deconnexion du portail doit aboutir quand meme.
+    // Le ramassage par inactivite reste le filet.
+    console.warn(`[deconnexion] ${identifiant} : ${e.message}`);
+  }
+  journal.ok(req, 'deconnexion', { identifiant, vmid, fermeture: vmid ? 'demandee' : 'aucune session' });
   res.clearCookie('enclave_portail', { path: '/' });
-  res.json({ ok: true });
+  res.json({ ok: true, vmid });
+}));
+
+/**
+ * Le navigateur signale que le chercheur a quitte la page de session.
+ *
+ * Appele par sendBeacon a la fermeture de l'onglet : la requete part meme si
+ * la page dispararait dans la foulee. Le corps est envoye en text/plain —
+ * sendBeacon ne permet pas de poser un en-tete Content-Type arbitraire sans
+ * declencher un preflight CORS.
+ *
+ * ON NE DETRUIT PAS ICI. Une coupure reseau de vingt secondes produit le meme
+ * signal qu'un depart definitif : la surveillance attend le delai de grace, et
+ * une reconnexion pendant ce delai annule le compte a rebours et rend au
+ * chercheur SA session, RStudio ouvert.
+ */
+app.post('/api/session/quittee', auth.garde, route(async (req, res) => {
+  const identifiant = req.chercheur.identifiant;
+  // Reponse immediate : le navigateur est peut-etre deja en train de fermer.
+  res.status(204).end();
+  try {
+    const s = await session.sessionExistante(identifiant);
+    if (s && surveillance.signalerDeconnexion(s.vmid, false)) {
+      journal.ecrire({ action: 'session-quittee', identifiant, vmid: s.vmid, resultat: 'ok' });
+    }
+  } catch (e) {
+    console.warn(`[session-quittee] ${identifiant} : ${e.message}`);
+  }
 }));
 
 // ---------------------------------------------------------------------------

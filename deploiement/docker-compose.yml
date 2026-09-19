@@ -47,6 +47,12 @@ services:
       # que Nginx ne proxifie pas : elle n'est joignable que depuis le réseau
       # Docker. Le secret s'ajoute à cette isolation, il ne la remplace pas.
       INTERNE_SECRET: ${INTERNE_SECRET:?definir INTERNE_SECRET dans .env}
+      # Surveillance des sessions : sans elle, un clone survit à la
+      # déconnexion et la reconnexion en crée un second.
+      INACTIVITE_MAX: ${INACTIVITE_MAX:-1800000}      # 30 min
+      DELAI_ACCUEIL: ${DELAI_ACCUEIL:-900000}         # 15 min pour se connecter
+      DUREE_MAX_SESSION: ${DUREE_MAX_SESSION:-43200000}  # 12 h
+      SURVEILLANCE_INTERVALLE: ${SURVEILLANCE_INTERVALLE:-60000}
       NODE_TLS_REJECT_UNAUTHORIZED: ${NODE_TLS_REJECT_UNAUTHORIZED:-1}
 
     volumes:

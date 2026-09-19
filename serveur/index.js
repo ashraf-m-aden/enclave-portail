@@ -29,9 +29,13 @@ const app = express();
 app.set('trust proxy', 'loopback');
 app.use(express.json({ limit: '16kb' }));
 
+// L'interface est servie DEPUIS LE CONTENEUR, avec le code qui la sert : une
+// seule copie, qui ne peut pas diverger de l'API.
+const INTERFACE = process.env.INTERFACE_CHEMIN || path.join(__dirname, 'console');
+
 app.use((req, res, suite) => {
   res.set('X-Content-Type-Options', 'nosniff');
-  res.set('Cache-Control', 'no-store');
+  if (req.path.startsWith('/api/')) res.set('Cache-Control', 'no-store');
   suite();
 });
 
@@ -293,6 +297,20 @@ app.get('/interne/surveillance', gardeInterne, route(async (req, res) => {
     },
   });
 }));
+
+// --- Interface ---------------------------------------------------------------
+
+app.use('/assets', express.static(path.join(INTERFACE, 'assets'), {
+  immutable: true,
+  maxAge: '1y',
+}));
+
+app.use(express.static(INTERFACE, { index: false }));
+
+app.use((req, res, suite) => {
+  if (req.path.startsWith('/api/') || req.path.startsWith('/interne/')) return suite();
+  res.sendFile(path.join(INTERFACE, 'index.html'), (e) => { if (e) suite(); });
+});
 
 app.use((req, res) => res.status(404).json({ erreur: 'route inconnue' }));
 

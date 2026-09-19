@@ -28,13 +28,22 @@ const SECRETS = process.env.PORTAIL_SECRETS
   || path.join(__dirname, 'etat', 'second-facteur.json');
 
 const DUREE_SESSION_MS = 30 * 60 * 1000;   // le temps d'ouvrir une session
+// Blocage precis : 5 echecs pour UN couple (identifiant, adresse).
 const TENTATIVES_MAX = 5;
 const BLOCAGE_MS = 15 * 60 * 1000;
+
+// Seuil d'ALERTE, tous couples confondus pour un meme identifiant. Il ne
+// bloque rien : il laisse une trace au journal. Voir plus bas pourquoi.
+const SEUIL_ALERTE = 20;
+const FENETRE_ALERTE_MS = 15 * 60 * 1000;
 
 const SECRET_COOKIE = process.env.PORTAIL_SECRET
   || crypto.randomBytes(32).toString('hex');
 
+// Cle : "identifiant|adresse". Deux cartes distinctes, deux roles distincts.
 const tentatives = new Map();
+// Cle : identifiant seul. Sert uniquement a reperer une attaque repartie.
+const echecsParCompte = new Map();
 
 // ---------------------------------------------------------------------------
 // Registre des accès — LECTURE SEULE
@@ -188,18 +197,86 @@ function verifierSecondFacteur(identifiant, code) {
 // Connexion
 // ---------------------------------------------------------------------------
 
-function verifierBlocage(identifiant) {
-  const b = tentatives.get(identifiant);
+/**
+ * Clé de blocage : l'identifiant ET l'adresse d'où vient la tentative.
+ *
+ * POURQUOI PAS L'IDENTIFIANT SEUL. Un compteur porté par le seul identifiant
+ * laisse n'importe qui verrouiller n'importe quel chercheur : cinq erreurs
+ * volontaires sur son nom, et il ne peut plus travailler pendant quinze
+ * minutes. C'est un déni de service gratuit contre une personne nommée.
+ *
+ * POURQUOI PAS L'ADRESSE SEULE. Une université partenaire peut présenter une
+ * seule adresse publique pour tous ses chercheurs : le premier qui se trompe
+ * bloquerait ses collègues.
+ *
+ * Le couple règle les deux : celui qui se trompe se bloque lui-même, et
+ * personne d'autre.
+ */
+function cleBlocage(identifiant, adresse) {
+  return `${identifiant}|${adresse || 'inconnue'}`;
+}
+
+function verifierBlocage(identifiant, adresse) {
+  const b = tentatives.get(cleBlocage(identifiant, adresse));
   if (b && b.n >= TENTATIVES_MAX && Date.now() < b.jusqu_a) {
     const reste = Math.ceil((b.jusqu_a - Date.now()) / 60000);
     throw new Error(`trop de tentatives — réessayez dans ${reste} min`);
   }
 }
 
-function compterEchec(identifiant) {
-  const b = tentatives.get(identifiant);
-  const n = (b && Date.now() < b.jusqu_a ? b.n : 0) + 1;
-  tentatives.set(identifiant, { n, jusqu_a: Date.now() + BLOCAGE_MS });
+/**
+ * Enregistre un échec, et renvoie une alerte quand un même compte est attaqué
+ * depuis de nombreuses adresses.
+ *
+ * Le couple (identifiant, adresse) ferme le déni de service, mais rouvre une
+ * porte : un attaquant disposant de mille adresses obtient cinq essais sur
+ * chacune. On ne peut pas bloquer globalement sans rétablir le déni de
+ * service — alors on ne bloque pas, ON VOIT. L'alerte part au journal, que la
+ * console affiche, et un administrateur décide.
+ *
+ * Ce choix se tient parce que le mot de passe ne suffit jamais : le second
+ * facteur reste devant. Une attaque par dictionnaire réussie ne donne encore
+ * rien.
+ *
+ * @returns {number|null} nombre d'échecs sur la fenêtre si le seuil d'alerte
+ *   vient d'être franchi, sinon null.
+ */
+function compterEchec(identifiant, adresse) {
+  const maintenant = Date.now();
+
+  const cle = cleBlocage(identifiant, adresse);
+  const b = tentatives.get(cle);
+  const n = (b && maintenant < b.jusqu_a ? b.n : 0) + 1;
+  tentatives.set(cle, { n, jusqu_a: maintenant + BLOCAGE_MS });
+
+  const g = echecsParCompte.get(identifiant);
+  const dansLaFenetre = g && maintenant < g.jusqu_a;
+  const total = (dansLaFenetre ? g.n : 0) + 1;
+  const dejaSignale = dansLaFenetre ? g.signale : false;
+  echecsParCompte.set(identifiant, {
+    n: total,
+    jusqu_a: dansLaFenetre ? g.jusqu_a : maintenant + FENETRE_ALERTE_MS,
+    signale: dejaSignale || total >= SEUIL_ALERTE,
+  });
+
+  purger(maintenant);
+  // Une seule alerte par fenêtre : on signale au franchissement, pas à chaque
+  // échec suivant, sinon le journal devient illisible au pire moment.
+  return (total >= SEUIL_ALERTE && !dejaSignale) ? total : null;
+}
+
+/**
+ * Retire les entrées expirées. Sans cela, les deux cartes grossissent à
+ * chaque identifiant essayé : une pulvérisation sur un dictionnaire de noms
+ * les ferait enfler sans limite, et c'est la mémoire du portail qui cèderait.
+ */
+function purger(maintenant) {
+  for (const [cle, v] of tentatives) {
+    if (maintenant >= v.jusqu_a) tentatives.delete(cle);
+  }
+  for (const [cle, v] of echecsParCompte) {
+    if (maintenant >= v.jusqu_a) echecsParCompte.delete(cle);
+  }
 }
 
 /**
@@ -208,8 +285,12 @@ function compterEchec(identifiant) {
  * @returns {{etape: 'enrolement'|'connecte', ...}} `enrolement` quand le
  *   second facteur n'est pas encore posé : la première connexion l'impose.
  */
-async function connecter(identifiant, motDePasse, code, ticket) {
-  verifierBlocage(identifiant);
+async function connecter(identifiant, motDePasse, code, ticket, adresse) {
+  verifierBlocage(identifiant, adresse);
+  // Rempli quand une attaque repartie franchit le seuil : l'appelant le
+  // porte au journal. Une valeur, pas une ecriture directe — auth.js ne
+  // connait pas la requete HTTP.
+  let alerte = null;
 
   const acces = lireRegistre()[identifiant];
   // Un accès qui n'est pas « actif » ne donne rien : provisionnement
@@ -219,8 +300,10 @@ async function connecter(identifiant, motDePasse, code, ticket) {
     && await verifierMotDePasse(motDePasse, acces.empreinte);
 
   if (!motDePasseValide) {
-    compterEchec(identifiant);
-    throw new Error('identifiant ou mot de passe incorrect');
+    alerte = compterEchec(identifiant, adresse);
+    const e = new Error('identifiant ou mot de passe incorrect');
+    e.alerteForceBrute = alerte;
+    throw e;
   }
 
   // Réenrôlement après révocation : le mot de passe NE SUFFIT PAS. Il faut
@@ -228,8 +311,9 @@ async function connecter(identifiant, motDePasse, code, ticket) {
   // laquelle le compte serait réduit à un seul facteur.
   if (reenrolementRequis(identifiant)) {
     if (!tickets.valide(identifiant, ticket)) {
-      compterEchec(identifiant);
-      throw new Error('ticket de réenrôlement absent, expiré ou incorrect');
+      const e = new Error('ticket de réenrôlement absent, expiré ou incorrect');
+      e.alerteForceBrute = compterEchec(identifiant, adresse);
+      throw e;
     }
     return { etape: 'enrolement', reenrolement: true, ...preparerEnrolement(identifiant) };
   }
@@ -240,11 +324,15 @@ async function connecter(identifiant, motDePasse, code, ticket) {
   }
 
   if (!verifierSecondFacteur(identifiant, code)) {
-    compterEchec(identifiant);
-    throw new Error('code de vérification incorrect');
+    const e = new Error('code de vérification incorrect');
+    e.alerteForceBrute = compterEchec(identifiant, adresse);
+    throw e;
   }
 
-  tentatives.delete(identifiant);
+  // Connexion reussie : on efface le compteur de CE couple seulement. Les
+  // echecs venus d'ailleurs restent comptes — une reussite legitime ne doit
+  // pas blanchir une attaque en cours depuis une autre adresse.
+  tentatives.delete(cleBlocage(identifiant, adresse));
   return { etape: 'connecte', jeton: signer({ identifiant, expire: Date.now() + DUREE_SESSION_MS }) };
 }
 

@@ -26,7 +26,24 @@ const surveillance = require('./surveillance');
 const journal = require('./journal');
 
 const app = express();
-app.set('trust proxy', 'loopback');
+// UN seul saut de confiance : Nginx, et rien d'autre.
+//
+// « loopback » ne suffit PAS ici. Nginx tourne sur l'hote et joint
+// 127.0.0.1:8091 ; Docker redirige vers le conteneur, qui voit alors comme
+// source la passerelle du pont (172.20.0.1), pas une adresse de bouclage.
+// Express refusait donc l'en-tete X-Forwarded-For, et TOUTES les entrees du
+// journal portaient « 172.20.0.1 » au lieu de l'adresse du chercheur : un
+// journal d'audit incapable de tracer qui s'est connecte d'ou.
+//
+// « 1 » n'est sur QUE parce que le port du conteneur est publie sur
+// 127.0.0.1 uniquement (voir docker-compose.yml) : Nginx est le seul client
+// possible, personne ne peut forger l'en-tete. Republier ce port sur 0.0.0.0
+// rendrait l'adresse falsifiable.
+//
+// Un relais SUPPLEMENTAIRE en amont (repartiteur de charge, CDN) ferait deux
+// sauts : il faudrait alors passer cette valeur a 2, sans quoi c'est l'adresse
+// du relais qui serait journalisee.
+app.set('trust proxy', 1);
 app.use(express.json({ limit: '16kb' }));
 
 // L'interface est servie DEPUIS LE CONTENEUR, avec le code qui la sert : une
@@ -121,9 +138,20 @@ app.post('/api/connexion', route(async (req, res) => {
 
   let r;
   try {
-    r = await auth.connecter(String(identifiant).trim(), String(motDePasse), code, ticket);
+    r = await auth.connecter(
+      String(identifiant).trim(), String(motDePasse), code, ticket, req.ip,
+    );
   } catch (e) {
     journal.echec(req, 'connexion', e.message, { identifiant });
+    // Attaque repartie : beaucoup d'echecs sur un meme compte, depuis des
+    // adresses differentes. Rien n'est bloque — bloquer globalement rendrait
+    // possible le verrouillage d'un chercheur par un tiers — mais la console
+    // doit le voir.
+    if (e.alerteForceBrute) {
+      journal.echec(req, 'alerte-force-brute', "seuil d'echecs franchi", {
+        identifiant, echecs: e.alerteForceBrute,
+      });
+    }
     return res.status(401).json({ erreur: e.message });
   }
 

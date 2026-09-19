@@ -1,0 +1,181 @@
+// ============================================================================
+//  Base — remise à zéro et éléments communs
+// ============================================================================
+*, *::before, *::after { box-sizing: border-box; }
+
+html, body, #app { height: 100%; }
+
+body {
+  margin: 0;
+  font-family: $font-ui;
+  font-size: 14px;
+  line-height: 1.55;
+  color: $ink;
+  background: $surface;
+  -webkit-font-smoothing: antialiased;
+}
+
+h1, h2, h3, h4 { margin: 0; font-weight: 600; letter-spacing: -0.01em; }
+h1 { font-size: 22px; }
+h2 { font-size: 17px; }
+h3 { font-size: 15px; }
+p  { margin: 0; }
+
+a { color: $blue-700; text-decoration: none; @include focus-visible; }
+a:hover { text-decoration: underline; }
+
+button { font-family: inherit; font-size: inherit; cursor: pointer; }
+
+// ---------- boutons ----------
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: $r-2;
+  padding: 9px $r-4;
+  border: 1px solid transparent;
+  border-radius: $rayon-s;
+  font-weight: 600;
+  font-size: 13px;
+  transition: $transition;
+  @include focus-visible;
+
+  &:disabled { opacity: 0.5; cursor: not-allowed; }
+}
+
+.btn--primaire {
+  background: $djib-blue;
+  color: $white;
+  &:hover:not(:disabled) { background: $blue-700; }
+}
+
+.btn--neutre {
+  background: $white;
+  color: $ink-2;
+  border-color: $rule;
+  &:hover:not(:disabled) { background: $blue-050; border-color: $blue-600; color: $blue-700; }
+}
+
+.btn--danger {
+  background: $white;
+  color: $danger;
+  border-color: rgba(230, 0, 32, 0.35);
+  &:hover:not(:disabled) { background: $danger-bg; border-color: $danger; }
+}
+
+.btn--petit { padding: 5px 10px; font-size: 12px; }
+
+// ---------- champs ----------
+
+.champ {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+
+  label { @include etiquette; }
+
+  input, select {
+    width: 100%;
+    padding: 9px $r-3;
+    border: 1px solid $rule;
+    border-radius: $rayon-s;
+    font-family: inherit;
+    font-size: 14px;
+    color: $ink;
+    background: $white;
+    transition: $transition;
+    @include focus-visible;
+
+    &:focus { border-color: $blue-600; }
+    &::placeholder { color: $ink-3; }
+  }
+
+  input[type="password"], input.mono { @include mono(13px); }
+}
+
+// ---------- pastilles d'état ----------
+
+.pastille {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  font-weight: 600;
+  white-space: nowrap;
+
+  &::before {
+    content: '';
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: currentColor;
+    flex: none;
+  }
+}
+
+.pastille--ok      { color: #0e8c22;     background: $ok-bg; }
+.pastille--alerte  { color: $alerte;             background: $alerte-bg; }
+.pastille--danger  { color: $danger;             background: $danger-bg; }
+.pastille--neutre  { color: $ink-3;              background: $rule-soft; }
+
+// ---------- tableaux ----------
+
+.tableau {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+
+  th {
+    @include etiquette;
+    text-align: left;
+    padding: 10px $r-4;
+    background: $blue-050;
+    border-bottom: 1px solid $rule;
+    white-space: nowrap;
+  }
+
+  td {
+    padding: 11px $r-4;
+    border-bottom: 1px solid $rule-soft;
+    vertical-align: middle;
+  }
+
+  tbody tr:last-child td { border-bottom: none; }
+  tbody tr:hover { background: $blue-050; }
+
+  .mono { @include mono(12.5px); color: $ink-2; }
+  .num  { font-variant-numeric: tabular-nums; }
+}
+
+.tableau-cadre {
+  @include carte;
+  overflow: hidden;
+  overflow-x: auto;
+}
+
+// ---------- messages ----------
+
+.message {
+  padding: $r-3 $r-4;
+  border-radius: $rayon-s;
+  border-left: 3px solid;
+  font-size: 13px;
+
+  &--erreur { background: $danger-bg; border-color: $danger; color: #b30019; }
+  &--succes { background: $ok-bg;     border-color: $ok;     color: #0b7a1d; }
+  &--info   { background: $blue-100;  border-color: $blue-600; color: $blue-800; }
+  &--alerte { background: $alerte-bg; border-color: $alerte; color: $alerte; }
+}
+
+.vide {
+  padding: $r-6;
+  text-align: center;
+  color: $ink-3;
+  font-size: 13px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; }
+}

@@ -1,0 +1,13 @@
+# Fins de ligne normalisées en LF dans le dépôt.
+# Sans cela, un checkout sous Windows produit des CRLF, et un CRLF casse
+# tout script shell exécuté dans un conteneur ou sur une VM Linux — piège
+# connu, documenté au guide de déploiement.
+* text=auto eol=lf
+
+# Binaires : jamais réécrits.
+*.png binary
+*.jpg binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+*.tgz binary

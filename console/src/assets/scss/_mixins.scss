@@ -1,0 +1,40 @@
+@use "variables" as *;
+
+// ============================================================================
+//  Mixins de la console
+// ============================================================================
+
+@mixin carte {
+  background: $white;
+  border: 1px solid $rule;
+  border-radius: $rayon;
+  box-shadow: $ombre;
+}
+
+@mixin etiquette {
+  font-family: $font-ui;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: $ink-3;
+}
+
+@mixin mono($taille: 13px) {
+  font-family: $font-mono;
+  font-size: $taille;
+  font-variant-numeric: tabular-nums;
+}
+
+@mixin focus-visible {
+  &:focus-visible {
+    outline: 2px solid $blue-600;
+    outline-offset: 2px;
+  }
+}
+
+@mixin tronquer {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

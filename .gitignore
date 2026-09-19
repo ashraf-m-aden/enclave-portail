@@ -1,0 +1,26 @@
+# Dépendances et artefacts de build
+node_modules/
+console/dist/
+
+# SECRETS — ne doivent jamais entrer dans le dépôt
+.env
+.env.*
+admin.env
+# ... sauf le modèle, qui ne contient aucune valeur.
+!.env.exemple
+*.key
+*.pem
+id_ed25519*
+enclave-*-agent
+!serveur/*.js
+
+# État d'exécution : comptes d'administration (empreintes) et journal d'audit
+etat/
+serveur/etat/
+*.jsonl
+
+# Divers
+*.log
+*.tgz
+.DS_Store
+Thumbs.db

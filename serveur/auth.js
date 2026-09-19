@@ -167,6 +167,34 @@ function revoquerEnrolement(identifiant, { demandePar, approuvePar }) {
   return tickets.emettre(identifiant, { demandePar, approuvePar });
 }
 
+/**
+ * Efface TOUTE trace du second facteur d'un compte.
+ *
+ * A n'appeler QUE lorsque l'acces lui-meme est revoque : la personne s'en va,
+ * rien ne doit lui survivre.
+ *
+ * A NE PAS CONFONDRE avec revoquerEnrolement(), qui garde une marque
+ * « revoque » pour EXIGER un ticket au prochain enrolement. Cette marque est
+ * juste tant que le compte existe ; elle devient nuisible quand il disparait,
+ * car un identifiant recree heriterait d'une exigence de ticket que personne
+ * ne lui a remis.
+ *
+ * POURQUOI CETTE FONCTION EXISTE. Supprimer un acces ne touchait pas au
+ * second facteur. Recreer plus tard le meme identifiant donnait un compte
+ * DEJA enrole, avec le secret de l'ancien titulaire : le nouveau chercheur ne
+ * pouvait pas se connecter, et l'ancien gardait un facteur valide. Constate en
+ * rejouant un essai de bout en bout sur un identifiant reutilise.
+ *
+ * @returns {boolean} vrai si quelque chose a ete efface.
+ */
+function purgerSecondFacteur(identifiant) {
+  const secrets = lireSecrets();
+  if (!(identifiant in secrets)) return false;
+  delete secrets[identifiant];
+  ecrireSecrets(secrets);
+  return true;
+}
+
 /** Un réenrôlement est-il en attente pour ce compte ? */
 function reenrolementRequis(identifiant) {
   const s = lireSecrets()[identifiant];
@@ -395,6 +423,6 @@ function jetonPour(identifiant) {
 
 module.exports = {
   connecter, garde, confirmerEnrolement, secondFacteurEnrole,
-  revoquerEnrolement, reenrolementRequis,
+  revoquerEnrolement, purgerSecondFacteur, reenrolementRequis,
   lireRegistre, verifierMotDePasse, jetonPour, DUREE_SESSION_MS,
 };

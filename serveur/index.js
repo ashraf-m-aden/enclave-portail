@@ -339,6 +339,27 @@ function gardeInterne(req, res, suite) {
  * La console reçoit le ticket — qu'elle transmet au chercheur hors bande —
  * mais jamais le secret TOTP, ni avant ni après.
  */
+/**
+ * Efface le second facteur d'un compte dont l'ACCES vient d'etre revoque.
+ *
+ * Appelee par la console apres une suppression d'acces reussie. Sans elle, le
+ * secret TOTP survivait a l'acces : un identifiant recree plus tard arrivait
+ * DEJA enrole, avec le secret de l'ancien titulaire. Le nouveau chercheur ne
+ * pouvait pas se connecter, et l'ancien conservait un facteur valide.
+ *
+ * Idempotente : rien a effacer n'est pas une erreur. La console ne doit pas
+ * echouer une revocation parce que le chercheur ne s'etait jamais enrole.
+ */
+app.delete('/interne/second-facteur/:identifiant', gardeInterne, route(async (req, res) => {
+  const identifiant = String(req.params.identifiant);
+  const efface = auth.purgerSecondFacteur(identifiant);
+  tickets.consommer(identifiant);
+  if (efface) {
+    journal.ok(req, 'purge-second-facteur', { identifiant });
+  }
+  res.json({ ok: true, efface });
+}));
+
 app.post('/interne/reenrolement', gardeInterne, route(async (req, res) => {
   const { identifiant, demandePar, approuvePar } = req.body || {};
   if (!identifiant || !demandePar) {

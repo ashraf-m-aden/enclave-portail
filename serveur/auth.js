@@ -400,6 +400,29 @@ function lireCookie(req, nom) {
   return null;
 }
 
+/**
+ * Garde allegee pour le signal de fermeture d'onglet.
+ *
+ * Verifie le cookie, mais PAS l'en-tete X-Portail — parce que
+ * navigator.sendBeacon NE PEUT PAS poser d'en-tete personnalise. Avec la
+ * garde normale, le signal partait bel et bien du navigateur et se faisait
+ * rejeter en 403 : la fonction n'aurait jamais marche en vrai, sans que rien
+ * ne le montre. Trouve en rejouant le parcours complet cote serveur.
+ *
+ * La protection CSRF reste entiere : le cookie est en SameSite=Strict, donc
+ * une requete venue d'un autre site ne le porte pas du tout et echoue des la
+ * verification du jeton. L'en-tete n'etait qu'une seconde ceinture.
+ *
+ * Cette garde ne protege QU'UNE route, qui ne fait que marquer une session
+ * pour un compte a rebours de dix minutes — et qu'une reconnexion annule.
+ */
+function gardeSignal(req, res, suite) {
+  const charge = verifierJeton(lireCookie(req, 'enclave_portail'));
+  if (!charge) return res.status(401).json({ erreur: 'session expirée ou absente' });
+  req.chercheur = charge;
+  suite();
+}
+
 function garde(req, res, suite) {
   const charge = verifierJeton(lireCookie(req, 'enclave_portail'));
   if (!charge) return res.status(401).json({ erreur: 'session expirée ou absente' });
@@ -423,6 +446,6 @@ function jetonPour(identifiant) {
 
 module.exports = {
   connecter, garde, confirmerEnrolement, secondFacteurEnrole,
-  revoquerEnrolement, purgerSecondFacteur, reenrolementRequis,
+  revoquerEnrolement, purgerSecondFacteur, gardeSignal, reenrolementRequis,
   lireRegistre, verifierMotDePasse, jetonPour, DUREE_SESSION_MS,
 };

@@ -284,6 +284,11 @@ app.post('/api/deconnexion', auth.garde, route(async (req, res) => {
 /**
  * Le navigateur signale que le chercheur a quitte la page de session.
  *
+ * Utilise gardeSignal et NON garde : sendBeacon ne peut poser AUCUN en-tete
+ * personnalise, donc pas de X-Portail. Avec la garde normale, le signal
+ * partait du navigateur et se faisait rejeter en 403 — la fonction n'aurait
+ * jamais marche en vrai. La protection CSRF vient du cookie SameSite=Strict.
+ *
  * Appele par sendBeacon a la fermeture de l'onglet : la requete part meme si
  * la page dispararait dans la foulee. Le corps est envoye en text/plain —
  * sendBeacon ne permet pas de poser un en-tete Content-Type arbitraire sans
@@ -294,7 +299,7 @@ app.post('/api/deconnexion', auth.garde, route(async (req, res) => {
  * une reconnexion pendant ce delai annule le compte a rebours et rend au
  * chercheur SA session, RStudio ouvert.
  */
-app.post('/api/session/quittee', auth.garde, route(async (req, res) => {
+app.post('/api/session/quittee', auth.gardeSignal, route(async (req, res) => {
   const identifiant = req.chercheur.identifiant;
   // Reponse immediate : le navigateur est peut-etre deja en train de fermer.
   res.status(204).end();

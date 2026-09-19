@@ -40,6 +40,10 @@ const sessionFermee = ref(false)
 // Vrai quand le serveur a retrouve une session au lieu d'en creer une : le
 // chercheur doit comprendre qu'il reprend son travail, pas qu'il repart de zero.
 const reprise = ref(false)
+// Renseignes quand le navigateur bloque l'ouverture : l'interface bascule
+// alors sur un lien que le chercheur clique lui-meme.
+const ongletBloque = ref(false)
+const urlSession = ref('')
 
 /**
  * Previent le serveur que le chercheur a quitte sa session.
@@ -65,14 +69,48 @@ onUnmounted(() => {
   window.removeEventListener('pagehide', signalerDepart)
 })
 
-/** Ouvre la session dans un onglet et surveille sa fermeture. */
+/**
+ * Reserve l'onglet de travail, PENDANT le clic du chercheur.
+ *
+ * C'est la seule fenetre de tir. Les navigateurs bloquent window.open hors
+ * d'un geste utilisateur : appeler cette fonction depuis la boucle de sondage,
+ * deux minutes plus tard, la fait echouer silencieusement — la page annoncait
+ * « ouverte dans un autre onglet » et aucun onglet n'apparaissait.
+ *
+ * L'onglet est donc ouvert tout de suite, sur une page d'attente, puis
+ * redirige vers la session quand elle est prete.
+ */
+function reserverOnglet() {
+  ongletSession = window.open('', 'enclave-session')
+  if (!ongletSession) return
+  // Meme origine : on peut y ecrire. Evite un onglet blanc inexplique
+  // pendant les deux minutes de demarrage.
+  ongletSession.document.write(
+    '<!doctype html><html lang="fr"><head><meta charset="utf-8">'
+    + '<title>Session en préparation…</title></head>'
+    + '<body style="font-family:system-ui,sans-serif;margin:0;display:flex;'
+    + 'align-items:center;justify-content:center;height:100vh;color:#00185f">'
+    + '<p style="font-size:15px">Votre machine démarre. Cet onglet s’ouvrira '
+    + 'automatiquement sur votre session.</p></body></html>')
+  ongletSession.document.close()
+}
+
+/** Envoie l'onglet reserve vers la session, et surveille sa fermeture. */
 function ouvrirOngletSession(url: string) {
-  ongletSession = window.open(url, 'enclave-session')
   etape.value = 'en-session'
 
-  // Le navigateur a bloque la fenetre : on laisse un lien a cliquer plutot
-  // que d'abandonner le chercheur devant un ecran qui ne fait rien.
-  if (!ongletSession) return
+  if (ongletSession && !ongletSession.closed) {
+    ongletSession.location.href = url
+  } else {
+    // Onglet bloque ou referme entre-temps : on retente, et si le navigateur
+    // refuse encore, l'interface propose un lien a cliquer — un clic EST un
+    // geste utilisateur, donc il passera.
+    ongletSession = window.open(url, 'enclave-session')
+  }
+
+  urlSession.value = url
+  ongletBloque.value = !ongletSession || ongletSession.closed
+  if (ongletBloque.value) return
 
   veille = window.setInterval(() => {
     if (ongletSession && ongletSession.closed) {
@@ -81,6 +119,21 @@ function ouvrirOngletSession(url: string) {
       sessionFermee.value = true
     }
   }, 2000)
+}
+
+/** Le chercheur clique lui-meme : ce geste leve le blocage du navigateur. */
+function ouvrirManuellement() {
+  ongletSession = window.open(urlSession.value, 'enclave-session')
+  ongletBloque.value = !ongletSession
+  if (ongletSession) {
+    veille = window.setInterval(() => {
+      if (ongletSession && ongletSession.closed) {
+        window.clearInterval(veille)
+        signalerDepart()
+        sessionFermee.value = true
+      }
+    }, 2000)
+  }
 }
 
 /** Bouton « terminer ma session » : intention explicite, aucun delai. */
@@ -115,6 +168,7 @@ async function connecter() {
       enCours.value = false
       return
     }
+    reserverOnglet()
     suivreOuverture(r.ticket)
   } catch (e) {
     const m = (e as Error).message
@@ -131,6 +185,7 @@ async function confirmerEnrolement() {
   try {
     const r = await api.enrolement(identifiant.value.trim(), motDePasse.value,
                                    code.value, ticket.value)
+    reserverOnglet()
     suivreOuverture(r.ticket)
   } catch (e) {
     erreur.value = (e as Error).message
@@ -307,7 +362,11 @@ function recommencer() {
           <h1 v-if="!sessionFermee && reprise">Nous avons retrouvé votre session</h1>
           <h1 v-else-if="!sessionFermee">Votre session est ouverte</h1>
           <h1 v-else>Session terminée</h1>
-          <p v-if="!sessionFermee && reprise">
+          <p v-if="!sessionFermee && ongletBloque">
+            Votre machine est prête. L'onglet n'a pas pu s'ouvrir tout seul —
+            ouvrez-le d'un clic ci-dessous.
+          </p>
+          <p v-else-if="!sessionFermee && reprise">
             Votre machine vous attendait, telle que vous l'aviez laissée. Elle
             s'est rouverte dans un autre onglet. Gardez cette page ouverte :
             c'est elle qui la libère quand vous partez.
@@ -323,7 +382,21 @@ function recommencer() {
         </div>
 
         <template v-if="!sessionFermee">
-          <button type="button" class="btn btn--primaire" @click="terminerSession">
+          <!-- Le navigateur a bloque l'ouverture : un clic du chercheur la
+               debloque, puisque c'est un geste utilisateur. -->
+          <template v-if="ongletBloque">
+            <p class="message message--alerte">
+              Votre navigateur a bloqué l'ouverture de l'onglet. Cliquez
+              ci-dessous pour ouvrir votre session.
+            </p>
+            <button type="button" class="btn btn--primaire" @click="ouvrirManuellement">
+              Ouvrir ma session
+            </button>
+          </template>
+
+          <button type="button" class="btn"
+                  :class="ongletBloque ? 'btn--neutre' : 'btn--primaire'"
+                  @click="terminerSession">
             Terminer ma session
           </button>
           <p class="aide aide--centree">
